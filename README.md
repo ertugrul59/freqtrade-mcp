@@ -3,13 +3,13 @@
 An MCP server that integrates with the [Freqtrade](https://www.freqtrade.io/) cryptocurrency trading bot via its REST API, enabling seamless AI agent interaction for automated trading operation.
 
 ![GitHub License](https://img.shields.io/github/license/kukapay/freqtrade-mcp)
-![Python Version](https://img.shields.io/badge/python-3.10+-blue)
+![Python Version](https://img.shields.io/badge/python-3.13+-blue)
 ![Status](https://img.shields.io/badge/status-active-brightgreen.svg)
 
 ## Installation
 
 ### Prerequisites
-- **Python 3.10+**: Ensure Python is installed on your system.
+- **Python 3.13+**: Ensure Python is installed on your system.
 - **Freqtrade**: A running Freqtrade instance with the REST API enabled (see [Freqtrade Docs](https://www.freqtrade.io/en/stable/rest-api/)).
 - **Git**: For cloning the repository.
 
