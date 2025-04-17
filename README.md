@@ -2,6 +2,7 @@
 
 An MCP server that integrates with the [Freqtrade](https://www.freqtrade.io/) cryptocurrency trading bot via its REST API, enabling seamless AI agent interaction for automated trading operation.
 
+[![Discord](https://img.shields.io/discord/1353556181251133481?cacheSeconds=3600)](https://discord.gg/aRnuu2eJ)
 ![GitHub License](https://img.shields.io/github/license/kukapay/freqtrade-mcp)
 ![Python Version](https://img.shields.io/badge/python-3.13+-blue)
 ![Status](https://img.shields.io/badge/status-active-brightgreen.svg)
