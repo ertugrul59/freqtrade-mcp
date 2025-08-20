@@ -285,15 +285,30 @@ async def fetch_locks(ctx: Context) -> str:
 
 
 @mcp.tool()
-async def place_trade(pair: str, side: str, stake_amount: float, ctx: Context) -> str:
+async def place_trade(
+    pair: str,
+    side: str,
+    ctx: Context,
+    price: float | None = None,
+    enter_tag: str | None = None,
+    stake_amount: float | None = None,  # kept for backward compatibility (ignored)
+) -> str:
     """
-    Place a trade (buy or sell) with the specified pair and amount.
+    Place or close a position using the official Freqtrade REST API endpoints.
+
+    According to the Freqtrade REST API docs, new positions are opened via
+    `forceenter(pair, side, price?)` and closed via `forceexit(pair)`.
+    Reference: https://www.freqtrade.io/en/stable/rest-api/
 
     Parameters:
-        pair (str): Trading pair (e.g., "BTC/USDT").
-        side (str): Trade direction, either "buy" or "sell".
-        stake_amount (float): Amount to trade in the stake currency.
-        ctx (Context): MCP context object for logging and client access.
+        pair (str): Trading pair (e.g., "BTC/USDT" or futures format "BTC/USDT:USDT").
+        side (str): One of ["buy", "long", "enter_long", "short", "enter_short",
+                     "sell", "exit", "close"]. Long/short will open a position via
+                     forceenter. Sell/exit/close will close via forceexit.
+        price (float | None): Optional limit price for `forceenter`. If omitted, market will be used.
+        enter_tag (str | None): Optional enter tag passed to `forceenter` for auditability.
+        stake_amount (float | None): Ignored. Position sizing is controlled by Freqtrade config
+                                     (e.g., stake_amount, balance ratio). Kept for compatibility.
 
     Returns:
         str: Stringified JSON response with trade result, or error message if failed.
@@ -302,15 +317,70 @@ async def place_trade(pair: str, side: str, stake_amount: float, ctx: Context) -
     if not client:
         return str({"error": "Freqtrade client not connected"})
 
-    if side.lower() not in ["buy", "sell"]:
-        return str({"error": "Side must be 'buy' or 'sell'"})
+    # Normalize side
+    normalized = side.strip().lower()
+    open_long_aliases = {"buy", "long", "enter_long"}
+    open_short_aliases = {"short", "enter_short"}
+    close_aliases = {"sell", "exit", "close", "exit_long", "exit_short"}
+
+    if normalized not in open_long_aliases | open_short_aliases | close_aliases:
+        return str(
+            {
+                "error": "Invalid side. Use one of: buy/long/enter_long, short/enter_short, sell/exit/close"
+            }
+        )
+
+    # Normalize pair for futures (e.g., Bybit requires ':USDT') when applicable
+    try:
+        cfg = client.config()
+        trading_mode = (cfg.get("trading_mode") or cfg.get("trading-mode") or "").lower()
+        if trading_mode == "futures" and ":USDT" not in pair:
+            pair = f"{pair}:USDT"
+    except Exception:
+        # If config is not available, proceed with the provided pair as-is
+        pass
+
+    # Basic validation for price (limit orders)
+    if price is not None:
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            return str({"error": "price must be a number if provided"})
+        if price <= 0:
+            return str({"error": "price must be greater than 0"})
 
     try:
-        if side.lower() == "buy":
-            response = client.forcebuy(pair=pair, stake_amount=stake_amount)
-        else:
-            response = client.forcesell(pair=pair, amount=stake_amount)
-        await ctx.info(f"Trade placed: {side} {stake_amount} of {pair}")
+        if normalized in open_long_aliases or normalized in open_short_aliases:
+            desired_side = "long" if normalized in open_long_aliases else "short"
+
+            if hasattr(client, "forceenter"):
+                # Call with keywords to be future-proof: `price` and `enter_tag` are optional
+                kwargs: Dict[str, Any] = {}
+                if price is not None:
+                    kwargs["price"] = price
+                # Auto-tag orders so it's clear if they were market or limit
+                auto_tag = None
+                if price is not None:
+                    auto_tag = "mcp-limit"
+                else:
+                    auto_tag = "mcp-market"
+                kwargs["enter_tag"] = enter_tag if enter_tag is not None else auto_tag
+                response = client.forceenter(pair, desired_side, **kwargs)
+                await ctx.info(
+                    f"Entered {desired_side} on {pair} via forceenter"
+                    + (f" @ {price}" if price is not None else "")
+                )
+            else:
+                return str({"error": "No supported 'forceenter' method available on client"})
+        else:  # close / exit
+            if hasattr(client, "forceexit"):
+                # Price is not applicable for exits; ignore if provided
+                response = client.forceexit(pair)
+                await ctx.info(f"Exited position on {pair} via forceexit")
+            else:
+                return str({"error": "No supported 'forceexit' method available on client"})
+
+        await ctx.info("Action completed successfully")
         return str(response)
     except (ConnectionError, TimeoutError) as e:
         return str({"error": f"Connection error placing trade: {e}"})
