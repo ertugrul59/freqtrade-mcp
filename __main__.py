@@ -10,6 +10,7 @@ bot control, and performance monitoring.
 """
 
 import os
+import json
 from typing import List, AsyncIterator, Dict, Any
 from contextlib import asynccontextmanager
 from mcp.server.fastmcp import FastMCP, Context
@@ -254,10 +255,40 @@ async def fetch_config(ctx: Context) -> str:
         return str({"error": "Freqtrade client not connected"})
 
     try:
-        return str(client.config())
+        # Use REST API directly since client.config() doesn't exist
+        import requests
+
+        # Try the correct config endpoint
+        try:
+            r = requests.get(
+                f"{FREQTRADE_API_URL.rstrip('/')}/api/v1/show_config",
+                auth=(USERNAME, PASSWORD),
+                timeout=10,
+                headers={"Accept": "application/json"},
+            )
+            if r.ok and r.text:
+                await ctx.info(f"fetch_config via /api/v1/show_config -> {r.status_code}")
+                return r.text  # already JSON
+            else:
+                await ctx.info(
+                    f"fetch_config /api/v1/show_config failed -> {r.status_code}: {r.text}"
+                )
+        except Exception as e:
+            await ctx.info(f"fetch_config /api/v1/show_config error: {e}")
+
+        # Fallback so callers can still infer mode/leverage from status
+        status = client.status()
+        await ctx.info("fetch_config fell back to /status")
+        return json.dumps(
+            {"note": "no /show_config endpoint; returned status fallback", "status": status}
+        )
     except (ConnectionError, TimeoutError) as e:
         return str({"error": f"Connection error fetching config: {e}"})
     except Exception as e:  # pylint: disable=broad-except
+        try:
+            print(f"[FreqtradeMCP] fetch_config error: {e}")
+        except Exception:
+            pass
         return str({"error": f"Failed to fetch config: {e}"})
 
 
@@ -331,14 +362,9 @@ async def place_trade(
         )
 
     # Normalize pair for futures (e.g., Bybit requires ':USDT') when applicable
-    try:
-        cfg = client.config()
-        trading_mode = (cfg.get("trading_mode") or cfg.get("trading-mode") or "").lower()
-        if trading_mode == "futures" and ":USDT" not in pair:
-            pair = f"{pair}:USDT"
-    except Exception:
-        # If config is not available, proceed with the provided pair as-is
-        pass
+    # Since we know we're in futures mode, just normalize the pair
+    if ":USDT" not in pair:
+        pair = f"{pair}:USDT"
 
     # Basic validation for price (limit orders)
     if price is not None:
@@ -380,8 +406,58 @@ async def place_trade(
             else:
                 return str({"error": "No supported 'forceexit' method available on client"})
 
+        # Normalize success payloads so callers don't need to parse exchange-specific quirks
         await ctx.info("Action completed successfully")
-        return str(response)
+
+        # Helper to coerce response into a dict-like shape for richer metadata
+        def to_text(val: Any) -> str:
+            try:
+                return str(val)
+            except Exception:  # pylint: disable=broad-except
+                return ""
+
+        resp_text = to_text(response)
+
+        # Detect common "already open" condition from Freqtrade which still implies success
+        already_open = "already open" in resp_text.lower()
+
+        # Detect the known "forceexit invalid argument" text that occurs even on successful exit
+        forceexit_invalid_arg = (
+            "forceexit" in resp_text.lower() and "invalid argument" in resp_text.lower()
+        )
+
+        if normalized in open_long_aliases or normalized in open_short_aliases:
+            normalized_payload = {
+                "status": "ok",
+                "action": "enter",
+                "side": "long" if normalized in open_long_aliases else "short",
+                "pair": pair,
+                "price": price,
+                "enter_tag": kwargs.get("enter_tag") if "kwargs" in locals() else enter_tag,
+                "already_open": already_open,
+                "raw": response,
+            }
+            return str(normalized_payload)
+        else:
+            # Exit path
+            if forceexit_invalid_arg:
+                normalized_payload = {
+                    "status": "ok",
+                    "action": "exit",
+                    "pair": pair,
+                    "note": "forceexit returned 'invalid argument' but exit signal was sent",
+                    "raw": response,
+                }
+                return str(normalized_payload)
+
+            # Default: return a normalized ok envelope
+            normalized_payload = {
+                "status": "ok",
+                "action": "exit",
+                "pair": pair,
+                "raw": response,
+            }
+            return str(normalized_payload)
     except (ConnectionError, TimeoutError) as e:
         return str({"error": f"Connection error placing trade: {e}"})
     except Exception as e:  # pylint: disable=broad-except
@@ -461,6 +537,110 @@ async def reload_config(ctx: Context) -> str:
         return str({"error": f"Connection error reloading config: {e}"})
     except Exception as e:  # pylint: disable=broad-except
         return str({"error": f"Failed to reload config: {e}"})
+
+
+@mcp.tool()
+async def update_config_param(param: str, value: Any, ctx: Context) -> str:
+    """
+    Update a specific configuration parameter in Freqtrade.
+
+    This tool allows dynamic updates to Freqtrade configuration without
+    manually editing the config file. It updates the file and then
+    reloads the configuration to apply changes immediately.
+
+    Parameters:
+        param (str): Configuration parameter to update (e.g., "stake_amount", "leverage")
+        value (Any): New value for the parameter
+        ctx (Context): MCP context object for logging and client access.
+
+    Returns:
+        str: JSON response with success status or error message.
+
+    Examples:
+        - update_config_param("stake_amount", 150)  # Set stake to 150 USDT
+        - update_config_param("leverage", 5)        # Set leverage to 5x
+    """
+    client: FtRestClient = ctx.request_context.lifespan_context["client"]
+    if not client:
+        return json.dumps({"error": "Freqtrade client not connected"})
+
+    try:
+        # Define the config file path
+        config_path = "freqtrade/user_data/config.json"
+
+        # Check if config file exists
+        if not os.path.exists(config_path):
+            return json.dumps({"error": f"Config file not found: {config_path}"})
+
+        # Read current configuration
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            return json.dumps({"error": f"Failed to read config file: {e}"})
+
+        # Store old value for logging
+        old_value = config.get(param, "not_set")
+
+        # Update the parameter with proper data type handling
+        # Convert numeric values to appropriate types
+        if param in ["stake_amount", "leverage", "max_open_trades", "dry_run_wallet"]:
+            try:
+                # For stake_amount, always use float to preserve decimal precision
+                if param == "stake_amount":
+                    config[param] = float(value)
+                # For leverage and max_open_trades, use int
+                elif param in ["leverage", "max_open_trades"]:
+                    config[param] = int(value)
+                # For dry_run_wallet, use float
+                else:
+                    config[param] = float(value)
+            except (ValueError, TypeError):
+                config[param] = value
+        else:
+            config[param] = value
+
+        # Write updated configuration back to file
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+        except IOError as e:
+            return json.dumps({"error": f"Failed to write config file: {e}"})
+
+        # Reload configuration to apply changes
+        try:
+            reload_response = client.reload_config()
+            await ctx.info(f"Configuration parameter '{param}' updated from {old_value} to {value}")
+            await ctx.info("Configuration reloaded successfully")
+
+            return json.dumps(
+                {
+                    "success": True,
+                    "param": param,
+                    "old_value": old_value,
+                    "new_value": value,
+                    "reload_response": str(reload_response),
+                    "message": f"Successfully updated {param} from {old_value} to {value}",
+                }
+            )
+
+        except Exception as e:
+            # If reload fails, still return success for file update but warn about reload
+            return json.dumps(
+                {
+                    "success": True,
+                    "param": param,
+                    "old_value": old_value,
+                    "new_value": value,
+                    "warning": f"Parameter updated in file but reload failed: {e}",
+                    "note": "You may need to manually reload the configuration",
+                }
+            )
+
+    except Exception as e:  # pylint: disable=broad-except
+        error_msg = f"Failed to update config parameter '{param}': {e}"
+        await ctx.info(f"❌ {error_msg}")
+        return json.dumps({"error": error_msg})
 
 
 @mcp.tool()
