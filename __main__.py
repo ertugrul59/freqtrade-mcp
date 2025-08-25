@@ -634,166 +634,166 @@ async def stop_bot(ctx: Context) -> str:
         return str({"error": f"Failed to stop bot: {e}"})
 
 
-@mcp.tool()
-async def reload_config(ctx: Context) -> str:
-    """
-    Reload the bot configuration.
+# @mcp.tool()
+# async def reload_config(ctx: Context) -> str:
+#     """
+#     Reload the bot configuration.
 
-    Parameters:
-        ctx (Context): MCP context object for logging and client access.
+#     Parameters:
+#         ctx (Context): MCP context object for logging and client access.
 
-    Returns:
-        str: Stringified JSON response or success message, or error if failed.
-    """
-    client: FtRestClient = ctx.request_context.lifespan_context["client"]
-    if not client:
-        return str({"error": "Freqtrade client not connected"})
+#     Returns:
+#         str: Stringified JSON response or success message, or error if failed.
+#     """
+#     client: FtRestClient = ctx.request_context.lifespan_context["client"]
+#     if not client:
+#         return str({"error": "Freqtrade client not connected"})
 
-    try:
-        response = client.reload_config()
-        await ctx.info("Configuration reloaded")
-        return str(response)
-    except (ConnectionError, TimeoutError) as e:
-        return str({"error": f"Connection error reloading config: {e}"})
-    except Exception as e:  # pylint: disable=broad-except
-        return str({"error": f"Failed to reload config: {e}"})
+#     try:
+#         response = client.reload_config()
+#         await ctx.info("Configuration reloaded")
+#         return str(response)
+#     except (ConnectionError, TimeoutError) as e:
+#         return str({"error": f"Connection error reloading config: {e}"})
+#     except Exception as e:  # pylint: disable=broad-except
+#         return str({"error": f"Failed to reload config: {e}"})
 
 
-@mcp.tool()
-async def update_config_param(param: str, value: Any, ctx: Context) -> str:
-    """
-    Update a specific configuration parameter in Freqtrade.
+# @mcp.tool()
+# async def update_config_param(param: str, value: Any, ctx: Context) -> str:
+#     """
+#     Update a specific configuration parameter in Freqtrade.
 
-    This tool allows dynamic updates to Freqtrade configuration without
-    manually editing the config file. It updates the file and then
-    reloads the configuration to apply changes immediately.
+#     This tool allows dynamic updates to Freqtrade configuration without
+#     manually editing the config file. It updates the file and then
+#     reloads the configuration to apply changes immediately.
 
-    Parameters:
-        param (str): Configuration parameter to update (e.g., "stake_amount", "leverage")
-        value (Any): New value for the parameter
-        ctx (Context): MCP context object for logging and client access.
+#     Parameters:
+#         param (str): Configuration parameter to update (e.g., "stake_amount", "leverage")
+#         value (Any): New value for the parameter
+#         ctx (Context): MCP context object for logging and client access.
 
-    Returns:
-        str: JSON response with success status or error message.
+#     Returns:
+#         str: JSON response with success status or error message.
 
-    Examples:
-        - update_config_param("stake_amount", 150)  # Set stake to 150 USDT
-        - update_config_param("leverage", 5)        # Set leverage to 5x
-    """
-    client: FtRestClient = ctx.request_context.lifespan_context["client"]
-    if not client:
-        return json.dumps({"error": "Freqtrade client not connected"})
+#     Examples:
+#         - update_config_param("stake_amount", 150)  # Set stake to 150 USDT
+#         - update_config_param("leverage", 5)        # Set leverage to 5x
+#     """
+#     client: FtRestClient = ctx.request_context.lifespan_context["client"]
+#     if not client:
+#         return json.dumps({"error": "Freqtrade client not connected"})
 
-    try:
-        # Resolve the config file path robustly
-        env_path = os.getenv("FREQTRADE_CONFIG_PATH")
-        resolved_path = None
-        if env_path:
-            candidate = os.path.abspath(env_path)
-            if os.path.exists(candidate):
-                resolved_path = candidate
-        if resolved_path is None:
-            # Project root is 2 levels up from this file
-            here = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.abspath(os.path.join(here, os.pardir, os.pardir))
-            candidate = os.path.join(project_root, "freqtrade", "user_data", "config.json")
-            if os.path.exists(candidate):
-                resolved_path = candidate
-        if resolved_path is None:
-            # Fallback to relative path (for tests)
-            candidate = "freqtrade/user_data/config.json"
-            if os.path.exists(candidate):
-                resolved_path = candidate
+#     try:
+#         # Resolve the config file path robustly
+#         env_path = os.getenv("FREQTRADE_CONFIG_PATH")
+#         resolved_path = None
+#         if env_path:
+#             candidate = os.path.abspath(env_path)
+#             if os.path.exists(candidate):
+#                 resolved_path = candidate
+#         if resolved_path is None:
+#             # Project root is 2 levels up from this file
+#             here = os.path.dirname(os.path.abspath(__file__))
+#             project_root = os.path.abspath(os.path.join(here, os.pardir, os.pardir))
+#             candidate = os.path.join(project_root, "freqtrade", "user_data", "config.json")
+#             if os.path.exists(candidate):
+#                 resolved_path = candidate
+#         if resolved_path is None:
+#             # Fallback to relative path (for tests)
+#             candidate = "freqtrade/user_data/config.json"
+#             if os.path.exists(candidate):
+#                 resolved_path = candidate
 
-        if resolved_path is None:
-            return json.dumps(
-                {
-                    "error": "Config file not found",
-                    "tried": [
-                        env_path or "(no FREQTRADE_CONFIG_PATH)",
-                        os.path.join(
-                            os.path.abspath(
-                                os.path.join(
-                                    os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir
-                                )
-                            ),
-                            "freqtrade",
-                            "user_data",
-                            "config.json",
-                        ),
-                        "freqtrade/user_data/config.json",
-                    ],
-                }
-            )
+#         if resolved_path is None:
+#             return json.dumps(
+#                 {
+#                     "error": "Config file not found",
+#                     "tried": [
+#                         env_path or "(no FREQTRADE_CONFIG_PATH)",
+#                         os.path.join(
+#                             os.path.abspath(
+#                                 os.path.join(
+#                                     os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir
+#                                 )
+#                             ),
+#                             "freqtrade",
+#                             "user_data",
+#                             "config.json",
+#                         ),
+#                         "freqtrade/user_data/config.json",
+#                     ],
+#                 }
+#             )
 
-        # Read current configuration
-        try:
-            with open(resolved_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
-            return json.dumps({"error": f"Failed to read config file: {e}", "path": resolved_path})
+#         # Read current configuration
+#         try:
+#             with open(resolved_path, "r", encoding="utf-8") as f:
+#                 config = json.load(f)
+#         except (json.JSONDecodeError, IOError) as e:
+#             return json.dumps({"error": f"Failed to read config file: {e}", "path": resolved_path})
 
-        # Store old value for logging
-        old_value = config.get(param, "not_set")
+#         # Store old value for logging
+#         old_value = config.get(param, "not_set")
 
-        # Update the parameter with proper data type handling
-        if param in ["stake_amount", "leverage", "max_open_trades", "dry_run_wallet"]:
-            try:
-                if param == "stake_amount":
-                    config[param] = float(value)
-                elif param in ["leverage", "max_open_trades"]:
-                    config[param] = int(value)
-                else:
-                    config[param] = float(value)
-            except (ValueError, TypeError):
-                config[param] = value
-        else:
-            config[param] = value
+#         # Update the parameter with proper data type handling
+#         if param in ["stake_amount", "leverage", "max_open_trades", "dry_run_wallet"]:
+#             try:
+#                 if param == "stake_amount":
+#                     config[param] = float(value)
+#                 elif param in ["leverage", "max_open_trades"]:
+#                     config[param] = int(value)
+#                 else:
+#                     config[param] = float(value)
+#             except (ValueError, TypeError):
+#                 config[param] = value
+#         else:
+#             config[param] = value
 
-        # Write updated configuration back to file
-        try:
-            with open(resolved_path, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-        except IOError as e:
-            return json.dumps({"error": f"Failed to write config file: {e}", "path": resolved_path})
+#         # Write updated configuration back to file
+#         try:
+#             with open(resolved_path, "w", encoding="utf-8") as f:
+#                 json.dump(config, f, indent=2, ensure_ascii=False)
+#         except IOError as e:
+#             return json.dumps({"error": f"Failed to write config file: {e}", "path": resolved_path})
 
-        # Reload configuration to apply changes
-        try:
-            reload_response = client.reload_config()
-            await ctx.info(
-                f"Configuration parameter '{param}' updated from {old_value} to {value} @ {resolved_path}"
-            )
-            await ctx.info("Configuration reloaded successfully")
+#         # Reload configuration to apply changes
+#         try:
+#             reload_response = client.reload_config()
+#             await ctx.info(
+#                 f"Configuration parameter '{param}' updated from {old_value} to {value} @ {resolved_path}"
+#             )
+#             await ctx.info("Configuration reloaded successfully")
 
-            return json.dumps(
-                {
-                    "success": True,
-                    "param": param,
-                    "old_value": old_value,
-                    "new_value": value,
-                    "config_path": resolved_path,
-                    "reload_response": str(reload_response),
-                    "message": f"Successfully updated {param} from {old_value} to {value}",
-                }
-            )
+#             return json.dumps(
+#                 {
+#                     "success": True,
+#                     "param": param,
+#                     "old_value": old_value,
+#                     "new_value": value,
+#                     "config_path": resolved_path,
+#                     "reload_response": str(reload_response),
+#                     "message": f"Successfully updated {param} from {old_value} to {value}",
+#                 }
+#             )
 
-        except Exception as e:
-            return json.dumps(
-                {
-                    "success": True,
-                    "param": param,
-                    "old_value": old_value,
-                    "new_value": value,
-                    "config_path": resolved_path,
-                    "warning": f"Parameter updated in file but reload failed: {e}",
-                    "note": "You may need to manually reload the configuration",
-                }
-            )
+#         except Exception as e:
+#             return json.dumps(
+#                 {
+#                     "success": True,
+#                     "param": param,
+#                     "old_value": old_value,
+#                     "new_value": value,
+#                     "config_path": resolved_path,
+#                     "warning": f"Parameter updated in file but reload failed: {e}",
+#                     "note": "You may need to manually reload the configuration",
+#                 }
+#             )
 
-    except Exception as e:  # pylint: disable=broad-except
-        error_msg = f"Failed to update config parameter '{param}': {e}"
-        await ctx.info(f"❌ {error_msg}")
-        return json.dumps({"error": error_msg})
+#     except Exception as e:  # pylint: disable=broad-except
+#         error_msg = f"Failed to update config parameter '{param}': {e}"
+#         await ctx.info(f"❌ {error_msg}")
+#         return json.dumps({"error": error_msg})
 
 
 @mcp.tool()
