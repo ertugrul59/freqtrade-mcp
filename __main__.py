@@ -401,8 +401,45 @@ async def place_trade(
         else:  # close / exit
             if hasattr(client, "forceexit"):
                 # Price is not applicable for exits; ignore if provided
-                response = client.forceexit(pair)
-                await ctx.info(f"Exited position on {pair} via forceexit")
+                try:
+                    # Try to resolve trade_id from current open trades
+                    trade_id = None
+                    try:
+                        current_status = client.status()
+                        if isinstance(current_status, (list, tuple)):
+                            # Normalize candidate pairs
+                            candidates = {pair}
+                            if ":USDT" not in pair and "USDT" in pair:
+                                candidates.add(f"{pair}:USDT")
+                            if pair.endswith(":USDT"):
+                                candidates.add(pair.replace(":USDT", "/USDT"))
+                            for t in current_status:
+                                tp = str(t.get("pair") or "")
+                                if tp in candidates and t.get("is_open"):
+                                    trade_id = t.get("trade_id")
+                                    break
+                    except Exception:
+                        trade_id = None
+
+                    if trade_id is not None:
+                        response = client.forceexit(tradeid=trade_id)
+                        await ctx.info(f"Exited trade_id {trade_id} via forceexit")
+                    else:
+                        # Fall back to pair-based exit with futures pair normalization
+                        exit_pair = pair
+                        if ":USDT" not in pair and "USDT" in pair:
+                            exit_pair = f"{pair}:USDT"
+                        response = client.forceexit(pair=exit_pair)
+                        await ctx.info(f"Exited position on {exit_pair} via forceexit")
+                except Exception as exit_error:
+                    # If forceexit fails, try alternative approach
+                    await ctx.info(f"Forceexit failed: {exit_error}, trying alternative method")
+                    try:
+                        response = client.forceexit(pair=pair)
+                        await ctx.info(f"Exited position on {pair} via forceexit (retry)")
+                    except Exception as retry_error:
+                        await ctx.info(f"All exit methods failed: {retry_error}")
+                        return str({"error": f"Failed to exit position: {retry_error}"})
             else:
                 return str({"error": "No supported 'forceexit' method available on client"})
 
@@ -464,6 +501,75 @@ async def place_trade(
         return str({"error": f"Failed to place trade: {e}"})
 
 
+# Add a new tool specifically for closing positions
+@mcp.tool()
+async def close_position(pair: str, ctx: Context) -> str:
+    """
+    Close a specific position by pair name.
+
+    This tool provides an alternative method to close positions using
+    trade_id resolution to avoid invalid-argument errors.
+
+    Parameters:
+        pair (str): Trading pair to close (e.g., "BTC/USDT").
+        ctx (Context): MCP context object for logging and client access.
+
+    Returns:
+        str: Stringified JSON response with close result, or error message if failed.
+    """
+    client: FtRestClient = ctx.request_context.lifespan_context["client"]
+    if not client:
+        return str({"error": "Freqtrade client not connected"})
+
+    try:
+        # Normalize candidate pair formats
+        candidates = {pair}
+        if ":USDT" not in pair and "USDT" in pair:
+            candidates.add(f"{pair}:USDT")
+        if pair.endswith(":USDT"):
+            candidates.add(pair.replace(":USDT", "/USDT"))
+
+        # Resolve trade_id from current open trades
+        trade_id = None
+        try:
+            status = client.status()
+            if isinstance(status, (list, tuple)):
+                for t in status:
+                    tp = str(t.get("pair") or "")
+                    if t.get("is_open") and tp in candidates:
+                        trade_id = t.get("trade_id")
+                        break
+        except Exception as e:
+            await ctx.info(f"Failed to read status for trade_id: {e}")
+
+        if trade_id is not None:
+            response = client.forceexit(tradeid=trade_id)
+            await ctx.info(f"Exited trade_id {trade_id} via forceexit")
+            return str(
+                {"status": "ok", "action": "close_position", "trade_id": trade_id, "raw": response}
+            )
+
+        # Fallback: try pair-based exit last (may fail on some client versions)
+        last_error = None
+        for p in list(candidates):
+            try:
+                response = client.forceexit(p)
+                await ctx.info(f"Exited position on {p} via forceexit (fallback)")
+                return str({"status": "ok", "action": "close_position", "pair": p, "raw": response})
+            except Exception as e:
+                last_error = e
+                await ctx.info(f"Fallback close failed for {p}: {e}")
+                continue
+
+        return str(
+            {
+                "error": f"Failed to close position. No trade_id found and pair-based exit failed: {last_error}"
+            }
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return str({"error": f"Failed to close position: {e}"})
+
+
 @mcp.tool()
 async def start_bot(ctx: Context) -> str:
     """
@@ -480,7 +586,14 @@ async def start_bot(ctx: Context) -> str:
         return str({"error": "Freqtrade client not connected"})
 
     try:
-        response = client.start_bot()
+        # Use the correct method name from Freqtrade client
+        if hasattr(client, "start"):
+            response = client.start()
+        elif hasattr(client, "start_bot"):
+            response = client.start_bot()
+        else:
+            return str({"error": "No supported 'start' method available on client"})
+
         await ctx.info("Freqtrade bot started")
         return str(response)
     except (ConnectionError, TimeoutError) as e:
@@ -505,7 +618,14 @@ async def stop_bot(ctx: Context) -> str:
         return str({"error": "Freqtrade client not connected"})
 
     try:
-        response = client.stop_bot()
+        # Use the correct method name from Freqtrade client
+        if hasattr(client, "stop"):
+            response = client.stop()
+        elif hasattr(client, "stop_bot"):
+            response = client.stop_bot()
+        else:
+            return str({"error": "No supported 'stop' method available on client"})
+
         await ctx.info("Freqtrade bot stopped")
         return str(response)
     except (ConnectionError, TimeoutError) as e:
