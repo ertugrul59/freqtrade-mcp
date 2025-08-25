@@ -685,34 +685,64 @@ async def update_config_param(param: str, value: Any, ctx: Context) -> str:
         return json.dumps({"error": "Freqtrade client not connected"})
 
     try:
-        # Define the config file path
-        config_path = "freqtrade/user_data/config.json"
+        # Resolve the config file path robustly
+        env_path = os.getenv("FREQTRADE_CONFIG_PATH")
+        resolved_path = None
+        if env_path:
+            candidate = os.path.abspath(env_path)
+            if os.path.exists(candidate):
+                resolved_path = candidate
+        if resolved_path is None:
+            # Project root is 2 levels up from this file
+            here = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.abspath(os.path.join(here, os.pardir, os.pardir))
+            candidate = os.path.join(project_root, "freqtrade", "user_data", "config.json")
+            if os.path.exists(candidate):
+                resolved_path = candidate
+        if resolved_path is None:
+            # Fallback to relative path (for tests)
+            candidate = "freqtrade/user_data/config.json"
+            if os.path.exists(candidate):
+                resolved_path = candidate
 
-        # Check if config file exists
-        if not os.path.exists(config_path):
-            return json.dumps({"error": f"Config file not found: {config_path}"})
+        if resolved_path is None:
+            return json.dumps(
+                {
+                    "error": "Config file not found",
+                    "tried": [
+                        env_path or "(no FREQTRADE_CONFIG_PATH)",
+                        os.path.join(
+                            os.path.abspath(
+                                os.path.join(
+                                    os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir
+                                )
+                            ),
+                            "freqtrade",
+                            "user_data",
+                            "config.json",
+                        ),
+                        "freqtrade/user_data/config.json",
+                    ],
+                }
+            )
 
         # Read current configuration
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(resolved_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
         except (json.JSONDecodeError, IOError) as e:
-            return json.dumps({"error": f"Failed to read config file: {e}"})
+            return json.dumps({"error": f"Failed to read config file: {e}", "path": resolved_path})
 
         # Store old value for logging
         old_value = config.get(param, "not_set")
 
         # Update the parameter with proper data type handling
-        # Convert numeric values to appropriate types
         if param in ["stake_amount", "leverage", "max_open_trades", "dry_run_wallet"]:
             try:
-                # For stake_amount, always use float to preserve decimal precision
                 if param == "stake_amount":
                     config[param] = float(value)
-                # For leverage and max_open_trades, use int
                 elif param in ["leverage", "max_open_trades"]:
                     config[param] = int(value)
-                # For dry_run_wallet, use float
                 else:
                     config[param] = float(value)
             except (ValueError, TypeError):
@@ -722,15 +752,17 @@ async def update_config_param(param: str, value: Any, ctx: Context) -> str:
 
         # Write updated configuration back to file
         try:
-            with open(config_path, "w", encoding="utf-8") as f:
+            with open(resolved_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
         except IOError as e:
-            return json.dumps({"error": f"Failed to write config file: {e}"})
+            return json.dumps({"error": f"Failed to write config file: {e}", "path": resolved_path})
 
         # Reload configuration to apply changes
         try:
             reload_response = client.reload_config()
-            await ctx.info(f"Configuration parameter '{param}' updated from {old_value} to {value}")
+            await ctx.info(
+                f"Configuration parameter '{param}' updated from {old_value} to {value} @ {resolved_path}"
+            )
             await ctx.info("Configuration reloaded successfully")
 
             return json.dumps(
@@ -739,19 +771,20 @@ async def update_config_param(param: str, value: Any, ctx: Context) -> str:
                     "param": param,
                     "old_value": old_value,
                     "new_value": value,
+                    "config_path": resolved_path,
                     "reload_response": str(reload_response),
                     "message": f"Successfully updated {param} from {old_value} to {value}",
                 }
             )
 
         except Exception as e:
-            # If reload fails, still return success for file update but warn about reload
             return json.dumps(
                 {
                     "success": True,
                     "param": param,
                     "old_value": old_value,
                     "new_value": value,
+                    "config_path": resolved_path,
                     "warning": f"Parameter updated in file but reload failed: {e}",
                     "note": "You may need to manually reload the configuration",
                 }
