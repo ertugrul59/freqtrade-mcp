@@ -22,6 +22,7 @@ from freqtrade_client.ft_rest_client import FtRestClient
 FREQTRADE_API_URL = os.getenv("FREQTRADE_API_URL", "http://127.0.0.1:8080")
 USERNAME = os.getenv("FREQTRADE_USERNAME", "Freqtrader")
 PASSWORD = os.getenv("FREQTRADE_PASSWORD", "SuperSecret1!")
+TRADING_MODE = os.getenv("FREQTRADE_TRADING_MODE", "futures")  # "futures" or "spot"
 
 
 # Lifecycle management for the Freqtrade client
@@ -32,7 +33,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[dict]:  # pylint: disab
         client = FtRestClient(FREQTRADE_API_URL, USERNAME, PASSWORD)
         # Test API connectivity
         if client.ping():
-            print("✅ Connected to Freqtrade API")
+            print(f"✅ Connected to Freqtrade API (Trading Mode: {TRADING_MODE})")
         else:
             print("⚠️ Failed to connect to Freqtrade API - client will be None")
             client = None
@@ -293,6 +294,28 @@ async def fetch_config(ctx: Context) -> str:
 
 
 @mcp.tool()
+async def get_trading_mode(ctx: Context) -> str:
+    """
+    Get the current trading mode configuration.
+
+    Parameters:
+        ctx (Context): MCP context object for logging and client access.
+
+    Returns:
+        str: JSON response with current trading mode and configuration.
+    """
+    return str(
+        {
+            "trading_mode": TRADING_MODE,
+            "description": "futures" if TRADING_MODE == "futures" else "spot",
+            "symbol_format": "BASE/USDT:USDT" if TRADING_MODE == "futures" else "BASE/USDT",
+            "environment_variable": "FREQTRADE_TRADING_MODE",
+            "note": "Set FREQTRADE_TRADING_MODE=futures or FREQTRADE_TRADING_MODE=spot to change mode",
+        }
+    )
+
+
+@mcp.tool()
 async def fetch_locks(ctx: Context) -> str:
     """
     Get the current trade locks.
@@ -315,6 +338,116 @@ async def fetch_locks(ctx: Context) -> str:
         return str({"error": f"Failed to fetch locks: {e}"})
 
 
+def _convert_symbol_format(symbol: str) -> str:
+    """
+    Convert symbol from various formats to Freqtrade format based on trading mode.
+
+    Handles conversions:
+    - KMNOUSDT -> KMNO/USDT:USDT (futures) or KMNO/USDT (spot)
+    - BTCUSDT -> BTC/USDT:USDT (futures) or BTC/USDT (spot)
+    - BTC/USDT -> BTC/USDT:USDT (futures) or BTC/USDT (spot)
+    - BTC/USDT:USDT -> BTC/USDT:USDT (futures) or BTC/USDT (spot)
+
+    Args:
+        symbol: Input symbol in various formats
+
+    Returns:
+        Symbol in appropriate Freqtrade format based on TRADING_MODE
+    """
+    # Already in correct format for futures
+    if "/USDT:USDT" in symbol:
+        if TRADING_MODE == "spot":
+            return symbol.replace(":USDT", "")  # Remove :USDT for spot
+        return symbol
+
+    # Handle formats like BTC/USDT -> BTC/USDT:USDT (futures) or BTC/USDT (spot)
+    if "/USDT" in symbol and ":USDT" not in symbol:
+        if TRADING_MODE == "futures":
+            return f"{symbol}:USDT"
+        return symbol
+
+    # Handle Bybit format like KMNOUSDT, BTCUSDT
+    if symbol.endswith("USDT") and "/" not in symbol and ":" not in symbol:
+        # Extract base currency by removing USDT suffix
+        base_currency = symbol[:-4]  # Remove 'USDT'
+        if TRADING_MODE == "futures":
+            return f"{base_currency}/USDT:USDT"
+        else:
+            return f"{base_currency}/USDT"
+
+    # Fallback: assume it needs :USDT suffix for futures
+    if TRADING_MODE == "futures" and ":USDT" not in symbol:
+        return f"{symbol}:USDT"
+
+    return symbol
+
+
+def _validate_symbol_in_whitelist(client, symbol: str) -> tuple[str, bool]:
+    """
+    Validate if symbol exists in Freqtrade whitelist and return the correct format.
+
+    Args:
+        client: Freqtrade REST client
+        symbol: Symbol to validate
+
+    Returns:
+        Tuple of (corrected_symbol, is_valid)
+    """
+    # Get whitelist - if this fails, we'll use basic conversion
+    whitelist = []
+    try:
+        whitelist_response = client.whitelist()
+        if isinstance(whitelist_response, dict) and "whitelist" in whitelist_response:
+            whitelist = whitelist_response["whitelist"]
+    except Exception:
+        pass  # Will use basic conversion below
+
+    # Check if symbol is in whitelist as-is
+    if whitelist and symbol in whitelist:
+        return symbol, True
+
+    # Handle Bybit format symbols (e.g., KMNOUSDT -> KMNO/USDT:USDT or KMNO/USDT)
+    if "/" not in symbol and ":" not in symbol and symbol.endswith("USDT"):
+        base = symbol[:-4]  # Remove 'USDT' suffix
+
+        # Convert based on trading mode
+        if TRADING_MODE == "futures":
+            primary_format = f"{base}/USDT:USDT"
+            fallback_formats = [
+                f"{base}/USDT",  # Spot format fallback
+                f"{base}USDT:USDT",  # Alternative futures format
+            ]
+        else:  # spot mode
+            primary_format = f"{base}/USDT"
+            fallback_formats = [
+                f"{base}/USDT:USDT",  # Futures format fallback
+                f"{base}USDT:USDT",  # Alternative futures format
+            ]
+
+        # If we have whitelist, check if it's valid
+        if whitelist:
+            if primary_format in whitelist:
+                return primary_format, True
+
+            # Try fallback formats
+            for fmt in fallback_formats:
+                if fmt in whitelist:
+                    return fmt, True
+
+            # Not found in whitelist
+            return primary_format, False
+        else:
+            # No whitelist available, assume conversion is correct
+            return primary_format, True
+
+    # For other formats, use basic conversion
+    converted = _convert_symbol_format(symbol)
+    if whitelist:
+        return converted, converted in whitelist
+    else:
+        return converted, True
+
+
 @mcp.tool()
 async def place_trade(
     pair: str,
@@ -332,7 +465,8 @@ async def place_trade(
     Reference: https://www.freqtrade.io/en/stable/rest-api/
 
     Parameters:
-        pair (str): Trading pair (e.g., "BTC/USDT" or futures format "BTC/USDT:USDT").
+        pair (str): Trading pair in any format (e.g., "KMNOUSDT", "BTC/USDT", "BTC/USDT:USDT").
+                   Will be automatically converted to Freqtrade futures format.
         side (str): One of ["buy", "long", "enter_long", "short", "enter_short",
                      "sell", "exit", "close"]. Long/short will open a position via
                      forceenter. Sell/exit/close will close via forceexit.
@@ -348,6 +482,26 @@ async def place_trade(
     if not client:
         return str({"error": "Freqtrade client not connected"})
 
+    # Convert and validate symbol format
+    original_pair = pair
+    pair, is_valid = _validate_symbol_in_whitelist(client, pair)
+
+    if original_pair != pair:
+        await ctx.info(
+            f"✅ Symbol format conversion: {original_pair} -> {pair} (mode: {TRADING_MODE})"
+        )
+
+    if not is_valid:
+        await ctx.info(f"⚠️ Symbol {pair} not found in whitelist")
+        return str(
+            {
+                "error": f"Symbol {pair} not found in Freqtrade whitelist. Check fetch_whitelist for available symbols.",
+                "original_symbol": original_pair,
+                "converted_symbol": pair,
+                "trading_mode": TRADING_MODE,
+            }
+        )
+
     # Normalize side
     normalized = side.strip().lower()
     open_long_aliases = {"buy", "long", "enter_long"}
@@ -360,11 +514,6 @@ async def place_trade(
                 "error": "Invalid side. Use one of: buy/long/enter_long, short/enter_short, sell/exit/close"
             }
         )
-
-    # Normalize pair for futures (e.g., Bybit requires ':USDT') when applicable
-    # Since we know we're in futures mode, just normalize the pair
-    if ":USDT" not in pair:
-        pair = f"{pair}:USDT"
 
     # Basic validation for price (limit orders)
     if price is not None:
@@ -501,7 +650,6 @@ async def place_trade(
         return str({"error": f"Failed to place trade: {e}"})
 
 
-# Add a new tool specifically for closing positions
 @mcp.tool()
 async def close_position(pair: str, ctx: Context) -> str:
     """
@@ -511,7 +659,8 @@ async def close_position(pair: str, ctx: Context) -> str:
     trade_id resolution to avoid invalid-argument errors.
 
     Parameters:
-        pair (str): Trading pair to close (e.g., "BTC/USDT").
+        pair (str): Trading pair to close in any format (e.g., "KMNOUSDT", "BTC/USDT").
+                   Will be automatically converted to Freqtrade futures format.
         ctx (Context): MCP context object for logging and client access.
 
     Returns:
@@ -522,7 +671,17 @@ async def close_position(pair: str, ctx: Context) -> str:
         return str({"error": "Freqtrade client not connected"})
 
     try:
-        # Normalize candidate pair formats
+        # Convert and validate symbol format
+        original_pair = pair
+        pair, is_valid = _validate_symbol_in_whitelist(client, pair)
+
+        if original_pair != pair:
+            await ctx.info(f"Symbol format conversion for close: {original_pair} -> {pair}")
+
+        if not is_valid:
+            await ctx.info(f"⚠️ Symbol {pair} not found in whitelist for close operation")
+
+        # Normalize candidate pair formats (keep original logic for robustness)
         candidates = {pair}
         if ":USDT" not in pair and "USDT" in pair:
             candidates.add(f"{pair}:USDT")
