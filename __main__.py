@@ -27,7 +27,9 @@ TRADING_MODE = os.getenv("FREQTRADE_TRADING_MODE", "futures")  # "futures" or "s
 
 # Lifecycle management for the Freqtrade client
 @asynccontextmanager
-async def app_lifespan(server: FastMCP) -> AsyncIterator[dict]:  # pylint: disable=unused-argument
+async def app_lifespan(
+    server: FastMCP,
+) -> AsyncIterator[dict]:  # pylint: disable=unused-argument
     """Manage the lifecycle of the Freqtrade REST client."""
     try:
         client = FtRestClient(FREQTRADE_API_URL, USERNAME, PASSWORD)
@@ -268,7 +270,9 @@ async def fetch_config(ctx: Context) -> str:
                 headers={"Accept": "application/json"},
             )
             if r.ok and r.text:
-                await ctx.info(f"fetch_config via /api/v1/show_config -> {r.status_code}")
+                await ctx.info(
+                    f"fetch_config via /api/v1/show_config -> {r.status_code}"
+                )
                 return r.text  # already JSON
             else:
                 await ctx.info(
@@ -281,7 +285,10 @@ async def fetch_config(ctx: Context) -> str:
         status = client.status()
         await ctx.info("fetch_config fell back to /status")
         return json.dumps(
-            {"note": "no /show_config endpoint; returned status fallback", "status": status}
+            {
+                "note": "no /show_config endpoint; returned status fallback",
+                "status": status,
+            }
         )
     except (ConnectionError, TimeoutError) as e:
         return str({"error": f"Connection error fetching config: {e}"})
@@ -308,7 +315,9 @@ async def get_trading_mode(ctx: Context) -> str:
         {
             "trading_mode": TRADING_MODE,
             "description": "futures" if TRADING_MODE == "futures" else "spot",
-            "symbol_format": "BASE/USDT:USDT" if TRADING_MODE == "futures" else "BASE/USDT",
+            "symbol_format": (
+                "BASE/USDT:USDT" if TRADING_MODE == "futures" else "BASE/USDT"
+            ),
             "environment_variable": "FREQTRADE_TRADING_MODE",
             "note": "Set FREQTRADE_TRADING_MODE=futures or FREQTRADE_TRADING_MODE=spot to change mode",
         }
@@ -546,7 +555,9 @@ async def place_trade(
                     + (f" @ {price}" if price is not None else "")
                 )
             else:
-                return str({"error": "No supported 'forceenter' method available on client"})
+                return str(
+                    {"error": "No supported 'forceenter' method available on client"}
+                )
         else:  # close / exit
             if hasattr(client, "forceexit"):
                 # Price is not applicable for exits; ignore if provided
@@ -582,15 +593,21 @@ async def place_trade(
                         await ctx.info(f"Exited position on {exit_pair} via forceexit")
                 except Exception as exit_error:
                     # If forceexit fails, try alternative approach
-                    await ctx.info(f"Forceexit failed: {exit_error}, trying alternative method")
+                    await ctx.info(
+                        f"Forceexit failed: {exit_error}, trying alternative method"
+                    )
                     try:
                         response = client.forceexit(pair=pair)
-                        await ctx.info(f"Exited position on {pair} via forceexit (retry)")
+                        await ctx.info(
+                            f"Exited position on {pair} via forceexit (retry)"
+                        )
                     except Exception as retry_error:
                         await ctx.info(f"All exit methods failed: {retry_error}")
                         return str({"error": f"Failed to exit position: {retry_error}"})
             else:
-                return str({"error": "No supported 'forceexit' method available on client"})
+                return str(
+                    {"error": "No supported 'forceexit' method available on client"}
+                )
 
         # Normalize success payloads so callers don't need to parse exchange-specific quirks
         await ctx.info("Action completed successfully")
@@ -619,7 +636,9 @@ async def place_trade(
                 "side": "long" if normalized in open_long_aliases else "short",
                 "pair": pair,
                 "price": price,
-                "enter_tag": kwargs.get("enter_tag") if "kwargs" in locals() else enter_tag,
+                "enter_tag": (
+                    kwargs.get("enter_tag") if "kwargs" in locals() else enter_tag
+                ),
                 "already_open": already_open,
                 "raw": response,
             }
@@ -676,10 +695,14 @@ async def close_position(pair: str, ctx: Context) -> str:
         pair, is_valid = _validate_symbol_in_whitelist(client, pair)
 
         if original_pair != pair:
-            await ctx.info(f"Symbol format conversion for close: {original_pair} -> {pair}")
+            await ctx.info(
+                f"Symbol format conversion for close: {original_pair} -> {pair}"
+            )
 
         if not is_valid:
-            await ctx.info(f"⚠️ Symbol {pair} not found in whitelist for close operation")
+            await ctx.info(
+                f"⚠️ Symbol {pair} not found in whitelist for close operation"
+            )
 
         # Normalize candidate pair formats (keep original logic for robustness)
         candidates = {pair}
@@ -705,16 +728,28 @@ async def close_position(pair: str, ctx: Context) -> str:
             response = client.forceexit(tradeid=trade_id)
             await ctx.info(f"Exited trade_id {trade_id} via forceexit")
             return str(
-                {"status": "ok", "action": "close_position", "trade_id": trade_id, "raw": response}
+                {
+                    "status": "ok",
+                    "action": "close_position",
+                    "trade_id": trade_id,
+                    "raw": response,
+                }
             )
 
         # Fallback: try pair-based exit last (may fail on some client versions)
         last_error = None
         for p in list(candidates):
             try:
-                response = client.forceexit(p)
+                response = client.forceexit(pair=p)
                 await ctx.info(f"Exited position on {p} via forceexit (fallback)")
-                return str({"status": "ok", "action": "close_position", "pair": p, "raw": response})
+                return str(
+                    {
+                        "status": "ok",
+                        "action": "close_position",
+                        "pair": p,
+                        "raw": response,
+                    }
+                )
             except Exception as e:
                 last_error = e
                 await ctx.info(f"Fallback close failed for {p}: {e}")
@@ -1041,11 +1076,16 @@ def analyze_trade(
     """Generate a prompt to analyze a trading pair's performance."""
     market_data = fetch_market_data(pair, timeframe, ctx)
     return [
-        {"role": "user", "content": f"Analyze the recent performance of {pair} over {timeframe}."},
+        {
+            "role": "user",
+            "content": f"Analyze the recent performance of {pair} over {timeframe}.",
+        },
         {"role": "user", "content": f"Market data: {market_data}"},
         {
             "role": "assistant",
-            "content": (f"I'll analyze the market data for {pair} and provide insights."),
+            "content": (
+                f"I'll analyze the market data for {pair} and provide insights."
+            ),
         },
     ]
 
